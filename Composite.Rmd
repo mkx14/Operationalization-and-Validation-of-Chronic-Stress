@@ -1,0 +1,1071 @@
+---
+title: "Composite Score"
+author: "Matthew Hill"
+date: "2024-12-09"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## Import necessary Packages for analysis.
+```{r}
+library(dplyr)
+library(haven)
+library(labelled)
+library(gtsummary)
+library(penfa)
+library(mice)
+library(gtools)
+```
+
+## Import Data
+```{r}
+# BIO = Biological data, bio_path should be changed to the file location of the bio data
+bio_path <- "/Users/mhill/Desktop/CMV_Research/Dissertation/M2_BIO_AGGREGATE_N1255_20240405.sav"
+BIO <- read_sav(bio_path)
+# DEMO = Demographic data, demo_path should be changed to the file location of the demo data
+demo_path <- "/Users/mhill/Desktop/CMV_Research/Dissertation/M2_P1_SURVEY_N4963_20200720.sav"
+DEMO <- read_sav(demo_path)
+```
+
+### Select variables for study and combine datasets
+```{r}
+BIO <- BIO %>% select(M2ID, B4P1GD, B4P1GS, B4BHA1C, B4BLDL, B4BHDL, B4P2A, B4BCHOL, B1PAGE_M2, B1PRSEX, B4QPS_PS, B4QSW_SL, B4BALBUMIN, B4HSYMN, B4H25, B4H56, B4O7, B4PBMI, B4BUCREA, B4BTRIGL, B4BFGN, B4BCRP, B4BGLUC, B4P1D) %>% rename(SBP = B4P1GS, DBP = B4P1GD, HBA1C = B4BHA1C, LDL = B4BLDL, HDL = B4BHDL, WAIST_CIRCUMFERENCE = B4P2A, TC = B4BCHOL, AGE = B1PAGE_M2, SEX = B1PRSEX, PSS = B4QPS_PS, SWLS = B4QSW_SL, URINE_ALBUMIN = B4BALBUMIN, NOLSACC = B4HSYMN, PHYSICAL_ACTIVITY = B4H25, DOFOR = B4H56, TOBACCO = B4O7, BMI = B4PBMI, URINE_CREATININE = B4BUCREA, TRIGLYCERIDES = B4BTRIGL, FIBRINOGEN = B4BFGN, CRP = B4BCRP, GLUCOSE = B4BGLUC, PULSE = B4P1D) 
+
+DEMO <- DEMO %>% select(M2ID, B1PB1, B1SG8A, B1PA50, B1PF7A) %>% rename(RACE_ETHNICITY = B1PF7A, EDUCATION = B1PB1, INCOME = B1SG8A, ALCOHOL = B1PA50)
+
+#Combine datasets using M2ID 
+full_data <- inner_join(x = BIO, y = DEMO, by = "M2ID")
+
+```
+
+### Recode variables 
+```{r}
+#Remove HAVEN labels 
+temp <- remove_labels(full_data)
+
+#Recode variables 
+temp <- temp %>% mutate(SEX = case_when(SEX == "1" ~ "MALE",
+                                        SEX == "2" ~ "FEMALE"),
+                        RACE_ETHNICITY = case_when(RACE_ETHNICITY == "1" ~ "WHITE",
+                                                   RACE_ETHNICITY == "2" ~ "BLACK",
+                                                   RACE_ETHNICITY == "3" ~ "NATIVE AMERICAN OR ALASKA NATIVE ALEUTIAN ISLANDER/ESKIMO" ,
+                                                   RACE_ETHNICITY == "4" ~ "ASIAN",
+                                                   RACE_ETHNICITY == "5" ~ "NATIVE HAWAIIAN OR PACIFIC ISLANDER",
+                                                   RACE_ETHNICITY == "6" ~ "OTHER"),
+                        EDUCATION = case_when(EDUCATION == "1" ~ "NO SCHOOL/SOME GRADE SCHOOL (1-6)",
+                                              EDUCATION == "2" ~ "8TH GRADE/JUNIOR HIGH SCHOOL (7-8)",
+                                              EDUCATION == "3" ~ "SOME HIGH SCHOOL (9-12) NO DIPLOMA/NO GED",
+                                              EDUCATION == "4" ~ "GED",
+                                              EDUCATION == "5" ~ "GRADUATED FROM HIGH SCHOOL",
+                                              EDUCATION == "6" ~ "1 TO 2 YEARS OF COLLEGE, NO DEGREE YET",
+                                              EDUCATION == "7" ~ "3 OR MORE YEARS OF COLLEGE, NO DEGREE YET",
+                                              EDUCATION == "8" ~ "GRADUATED FROM 2 YEAR COLLEGE, VOCATIONAL SCHOOL, OR ASSOCIATE DEGREE",
+                                              EDUCATION == "9" ~ "GRADUATED FROM A 4 OR 5 YEAR COLLEGE, OR BACHELOR'S DEGREE",
+                                              EDUCATION == "10" ~ "SOME GRADUATE SCHOOL",
+                                              EDUCATION == "11" ~ "MASTER'S DEGREE",
+                                              EDUCATION == "12" ~ "PH.D., ED.D, MD, DDS, LLB, LLD, JID, OR OTHER PROFESSIONAL DEGREE"),
+                        INCOME = case_when(INCOME >= 14 ~ "YES",
+                                           INCOME < 14 ~ "NO"),
+                        ALCOHOL = case_when(ALCOHOL == 1 ~ "YES",
+                                            ALCOHOL == 2 ~ "NO"),
+                        TOBACCO = case_when(TOBACCO == 1 ~ "YES",
+                                            TOBACCO == 2 ~ "NO"),
+                        PHYSICAL_ACTIVITY = case_when(PHYSICAL_ACTIVITY == 1 ~ "YES",
+                                                      PHYSICAL_ACTIVITY == 2 ~ "NO"),
+                        DOFOR = case_when(DOFOR == 1 ~ "YES",
+                                          DOFOR == 2 ~ "NO"))
+
+#Convert necessary variables to factors 
+temp[c("SEX","RACE_ETHNICITY","TOBACCO","PHYSICAL_ACTIVITY","DOFOR","EDUCATION","INCOME","ALCOHOL")] <- lapply(temp[c("SEX","RACE_ETHNICITY","TOBACCO","PHYSICAL_ACTIVITY","DOFOR","EDUCATION","INCOME","ALCOHOL")], factor)
+temp <- temp[,-1]
+
+```
+
+#Summary Stats (CCA)
+```{r}
+#Create summary table for CCA dataset
+summary_table <- tbl_summary(temp[complete.cases(temp),],type = list(c(SEX,RACE_ETHNICITY,EDUCATION,INCOME,ALCOHOL,PHYSICAL_ACTIVITY,TOBACCO,DOFOR) ~ "categorical"),statistic = list(
+       all_continuous() ~ "{mean} ({sd})",
+       all_categorical() ~ "{p}%"
+     ),
+     digits = all_continuous() ~ 2, missing = "no") %>% as_gt()
+summary_table
+#Export summary table  
+#write.xlsx(summary_table,'Summary_Table.xlsx')
+
+```
+
+# Outliers 
+```{r}
+#Detects outliers
+outliers <- function(x) {
+#Calculate Interquartile range (IQR)
+  Q1 <- quantile(x, probs = .25,na.rm = TRUE)
+  Q3 <- quantile(x, probs = .75,na.rm = TRUE)
+  iqr = Q3 - Q1
+
+ upper_limit = Q3 + (iqr*1.5)
+ lower_limit = Q1 - (iqr*1.5)
+#find values above and below the upper and lower limits 
+ x > upper_limit | x < lower_limit
+}
+
+#Removes outliers
+remove_outliers <- function(df) {
+  #Get all continuous column names
+  cols <- names(df)[sapply(df, is.numeric)]
+  for (col in cols) {
+    
+    df <- df[!outliers(df[[col]]),]
+  }
+  df
+}
+```
+
+### Removing Outliers (Optional)
+```{r}
+#Remove the # from the below line of code if you intend to remove outliers
+temp.out <- remove_outliers(temp)
+```
+
+# Missing Data
+### Checking Missing 
+```{r}
+#Provides missing data percentages
+pMiss <- function(x){sum(is.na(x))/length(x)*100}
+data.frame("Percent Missing" = sort(apply(temp,2,pMiss),decreasing = TRUE))
+
+```
+
+### MICE or CCA
+```{r}
+set.seed(123)
+#Function for handling missing data
+missing_data <- function(x, method = "CCA", m = 5, maxit = 10){
+  if(method == "CCA"){
+    x <- x[complete.cases(x),]
+  }else if(method == "MICE"){
+    x[c("SEX","RACE_ETHNICITY","TOBACCO","PHYSICAL_ACTIVITY","DOFOR","EDUCATION","INCOME","ALCOHOL")] <- lapply(x[c("SEX","RACE_ETHNICITY","TOBACCO","PHYSICAL_ACTIVITY","DOFOR","EDUCATION","INCOME","ALCOHOL")], factor)
+
+    meth <- make.method(x)
+    meth[c("SEX","TOBACCO","PHYSICAL_ACTIVITY","DOFOR","ALCOHOL","INCOME")] <- 'logreg'
+    meth[c("RACE_ETHNICITY","EDUCATION")] <- 'polyreg'
+
+
+    x <- mice(x, m = m, maxit = maxit, method = meth, seed=123, print = FALSE)
+    x <- complete(x,'long',include = FALSE)
+  }else {
+    stop("No method for handling missing data chosen")
+  }
+  return(x)
+}
+
+```
+
+```{r}
+# CCA 
+CCA_data <- missing_data(temp,"CCA")
+
+# CCA, Outliers Excluded
+CCA_data.out <- missing_data(temp.out,"CCA")
+
+#MICE
+#m=38 and maxit = 10, based on paper by white et. al (Rule of thumb)
+MICE_data <- missing_data(temp,"MICE",38,10)
+
+# MICE, Outliers Excluded
+MICE_data.out <- missing_data(temp.out,"MICE",38,10)
+```
+
+#Summary Stats (MICE)
+```{r}
+cont_vars <- names(temp)[sapply(temp, is.numeric)]
+
+for (i in colnames(temp)) {
+  if (i %in% cont_vars){
+    pool_mean <- with(MICE_data, by(MICE_data, .imp, function(x) c(mean(x[,i]),sd(x[,i]))))
+    print(i)
+    print(Reduce("+",pool_mean)/length(pool_mean))
+
+  } 
+  else {
+    pool_mean <- with(MICE_data, by(MICE_data, .imp, function(x) prop.table(table(x[,i]))*100))
+    print(i)
+    print(Reduce("+",pool_mean)/length(pool_mean))
+
+  
+  }
+}
+
+```
+
+#Create cut-offs for binary constructions
+
+```{r}
+
+
+study <- function(df){
+ 
+  df <- df %>% mutate(EDUCATION = case_when(EDUCATION == "NO SCHOOL/SOME GRADE SCHOOL (1-6)" ~ 1,
+                                              EDUCATION == "8TH GRADE/JUNIOR HIGH SCHOOL (7-8)" ~ 1,
+                                              EDUCATION == "SOME HIGH SCHOOL (9-12) NO DIPLOMA/NO GED" ~ 1,
+                                              EDUCATION == "GED" ~ 0,
+                                              EDUCATION == "GRADUATED FROM HIGH SCHOOL" ~ 0,
+                                              EDUCATION == "1 TO 2 YEARS OF COLLEGE, NO DEGREE YET" ~ 0,
+                                              EDUCATION == "3 OR MORE YEARS OF COLLEGE, NO DEGREE YET" ~ 0,
+                                              EDUCATION == "GRADUATED FROM 2 YEAR COLLEGE, VOCATIONAL SCHOOL, OR ASSOCIATE DEGREE" ~ 0,
+                                              EDUCATION == "GRADUATED FROM A 4 OR 5 YEAR COLLEGE, OR BACHELOR'S DEGREE" ~ 0,
+                                              EDUCATION == "SOME GRADUATE SCHOOL" ~ 0,
+                                              EDUCATION == "MASTER'S DEGREE" ~ 0,
+                                              EDUCATION == "PH.D., ED.D, MD, DDS, LLB, LLD, JID, OR OTHER PROFESSIONAL DEGREE" ~ 0),
+                        INCOME = case_when(INCOME == "YES" ~ 0,
+                                           INCOME == "NO" ~ 1),
+                        ALCOHOL = case_when(ALCOHOL == "YES" ~ 1,
+                                            ALCOHOL == "NO" ~ 0),
+                        TOBACCO = case_when(TOBACCO == "YES" ~ 1,
+                                            TOBACCO == "NO" ~ 0),
+                        PHYSICAL_ACTIVITY = case_when(PHYSICAL_ACTIVITY == "YES" ~ 0,
+                                                      PHYSICAL_ACTIVITY == "NO" ~ 1),
+                        SBP.q = case_when(SBP >= quantile(SBP,probs = c(0,0.25,0.5,0.75,1),na.rm = TRUE)[4] ~ 1,
+                                               is.na(SBP) ~ NA,
+                                               TRUE ~ 0),
+                        DBP.q = case_when(DBP >= quantile(DBP,probs = c(0,0.25,0.5,0.75,1),na.rm = TRUE)[4] ~ 1,
+                                               is.na(DBP) ~ NA,
+                                               TRUE ~ 0),
+                        TC.q = case_when(TC >= quantile(TC,probs = c(0,0.25,0.5,0.75,1),na.rm = TRUE)[4] ~ 1,
+                                               is.na(TC) ~ NA,
+                                               TRUE ~ 0),
+                        HBA1C.q = case_when(HBA1C >= quantile(HBA1C,probs = c(0,0.25,0.5,0.75,1),na.rm = TRUE)[4] ~ 1,
+                                               is.na(HBA1C) ~ NA,
+                                               TRUE ~ 0),
+                        TG.q = case_when(TRIGLYCERIDES >= quantile(TRIGLYCERIDES,probs = c(0,0.25,0.5,0.75,1),na.rm = TRUE)[4] ~ 1,
+                                               is.na(TRIGLYCERIDES) ~ NA,
+                                               TRUE ~ 0),
+                        BMI.q = case_when(BMI >= quantile(BMI,probs = c(0,0.25,0.5,0.75,1),na.rm = TRUE)[4] ~ 1,
+                                               is.na(BMI) ~ NA,
+                                               TRUE ~ 0),
+                        CRP.q = case_when(CRP >= quantile(CRP,probs = c(0,0.25,0.5,0.75,1),na.rm = TRUE)[4] ~ 1,
+                                               is.na(CRP) ~ NA,
+                                               TRUE ~ 0),
+                        LDL.q = case_when(LDL >= quantile(LDL,probs = c(0,0.25,0.5,0.75,1),na.rm = TRUE)[4] ~ 1,
+                                               is.na(LDL) ~ NA,
+                                               TRUE ~ 0),
+                        WC.q = case_when(WAIST_CIRCUMFERENCE >= quantile(WAIST_CIRCUMFERENCE,probs = c(0,0.25,0.5,0.75,1),na.rm = TRUE)[4] ~ 1,
+                                               is.na(WAIST_CIRCUMFERENCE) ~ NA,
+                                               TRUE ~ 0),
+                        GLUCOSE.q = case_when(GLUCOSE >= quantile(GLUCOSE,probs = c(0,0.25,0.5,0.75,1),na.rm = TRUE)[4] ~ 1,
+                                               is.na(GLUCOSE) ~ NA,
+                                               TRUE ~ 0),
+                        PULSE.q = case_when(PULSE >= quantile(PULSE,probs = c(0,0.25,0.5,0.75,1),na.rm = TRUE)[4] ~ 1,
+                                               is.na(PULSE) ~ NA,
+                                               TRUE ~ 0),
+                        FIB.q = case_when(FIBRINOGEN >= quantile(FIBRINOGEN,probs = c(0,0.25,0.5,0.75,1),na.rm = TRUE)[4] | FIBRINOGEN <= quantile(FIBRINOGEN,probs = c(0,0.25,0.5,0.75,1),na.rm = TRUE)[2] ~ 1,
+                                               is.na(FIBRINOGEN) ~ NA,
+                                               TRUE ~ 0),
+                        ALB.q = case_when(URINE_ALBUMIN <= quantile(URINE_ALBUMIN,probs = c(0,0.25,0.5,0.75,1),na.rm = TRUE)[2] ~ 1,
+                                               is.na(FIBRINOGEN) ~ NA,
+                                               TRUE ~ 0),
+                        CLCR.q = case_when(URINE_CREATININE <= quantile(URINE_CREATININE,probs = c(0,0.25,0.5,0.75,1),na.rm = TRUE)[2] ~ 1,
+                                               is.na(FIBRINOGEN) ~ NA,
+                                               TRUE ~ 0),
+                        HDL.q = case_when(HDL <= quantile(HDL,probs = c(0,0.25,0.5,0.75,1),na.rm = TRUE)[2] ~ 1,
+                                               is.na(HDL) ~ NA,
+                                               TRUE ~ 0)
+                        )
+  return(df)
+}
+
+```
+
+```{r}
+CCA_data <- study(CCA_data)
+
+CCA_data.out <- study(CCA_data.out)
+
+MICE_data <- MICE_data %>%
+  group_by(.imp) %>%              # Ensure operations are done separately per imputation
+  mutate(across(everything(), ~replace(., is.na(.), NA))) %>%  
+  study() %>%                
+  ungroup()
+
+MICE_data.out <- MICE_data.out %>%
+  group_by(.imp) %>%              # Ensure operations are done separately per imputation
+  mutate(across(everything(), ~replace(., is.na(.), NA))) %>%  
+  study() %>%                 
+  ungroup()
+```
+
+# Standarization
+```{r}
+standardize_numerical <- function(data, 
+                                  method = c("zscore", "minmax"), 
+                                  columns = NULL,
+                                  by_imp = FALSE, 
+                                  imp_var = ".imp", 
+                                  id_var = ".id") {
+  
+  method <- match.arg(method)
+  
+  if (by_imp && !imp_var %in% names(data)) {
+    stop(paste0("by_imp = TRUE requires a column named '", imp_var, 
+                "' (typically from mice::complete(..., 'long'))"))
+  }
+  
+  # Determine which columns are numeric for scaling purposes
+  if (by_imp) {
+    # Use only imputed data (.imp > 0) to detect truly numeric columns
+    data_imp <- data[data[[imp_var]] > 0, , drop = FALSE]
+    is_num <- sapply(data_imp, is.numeric)
+  } else {
+    # Use whole dataset
+    is_num <- sapply(data, is.numeric)
+  }
+  
+  num_cols_all <- names(data)[is_num]
+  
+  # Always exclude imp and id variables
+  num_cols_all <- setdiff(num_cols_all, c(imp_var, id_var))
+  
+  # Select target columns
+  if (is.null(columns)) {
+    num_cols <- num_cols_all
+    if (length(num_cols) > 0) {
+      message("Scaling all detected numerical columns: ", 
+              paste(num_cols, collapse = ", "))
+    }
+  } else {
+    missing_cols <- setdiff(columns, names(data))
+    if (length(missing_cols) > 0) {
+      stop("Columns not found in data: ", paste(missing_cols, collapse = ", "))
+    }
+    
+    non_num_cols <- setdiff(columns, num_cols_all)
+    if (length(non_num_cols) > 0) {
+      warning("Specified columns not numeric (skipped): ", 
+              paste(non_num_cols, collapse = ", "))
+    }
+    
+    num_cols <- intersect(columns, num_cols_all)
+  }
+  
+  if (length(num_cols) == 0) {
+    warning("No valid numeric columns to scale.")
+    return(data)
+  }
+  
+  # Scaling functions (handle constants and NAs safely)
+  zscore_scale <- function(x) {
+    m <- mean(x, na.rm = TRUE)
+    s <- sd(x, na.rm = TRUE)
+    if (s == 0 || is.na(s)) {
+      rep(0, length(x))
+    } else {
+      (x - m) / s
+    }
+  }
+  
+  minmax_scale <- function(x) {
+    rng <- range(x, na.rm = TRUE)
+    d <- diff(rng)
+    if (d == 0 || is.na(d)) {
+      rep(0, length(x))
+    } else {
+      (x - rng[1]) / d
+    }
+  }
+  
+  scale_fun <- if (method == "zscore") zscore_scale else minmax_scale
+  
+  if (!by_imp) {
+    data[num_cols] <- lapply(data[num_cols], scale_fun)
+  } else {
+    if (!requireNamespace("dplyr", quietly = TRUE)) {
+      stop("dplyr is required when by_imp = TRUE")
+    }
+    library(dplyr)
+    
+    data <- data %>%
+      group_by(.data[[imp_var]]) %>%
+      mutate(across(all_of(num_cols), scale_fun)) %>%
+      ungroup()
+  }
+  
+  return(data)
+}
+```
+
+
+
+```{r}
+st_cols <- c("DBP" ,"HBA1C" ,"LDL" ,"WAIST_CIRCUMFERENCE" ,"SBP" ,"TC" ,"HDL", "CRP", "BMI", "TRIGLYCERIDES", "FIBRINOGEN", "GLUCOSE", "PULSE", "URINE_ALBUMIN","URINE_CREATININE","NOLSACC","PSS","SWLS")
+#Standardize data 
+CCA_Z <- standardize_numerical(CCA_data,method = "zscore",columns = st_cols)
+
+CCA_Z.out <- standardize_numerical(CCA_data.out,method = "zscore",columns = st_cols)
+
+CCA_Min <- standardize_numerical(CCA_data,method = "minmax",columns = st_cols)
+
+CCA_Min.out <- standardize_numerical(CCA_data.out,method = "minmax",columns = st_cols)
+#need to apply standarization to all 38 datasets 
+MICE_Z <- standardize_numerical(MICE_data,
+                                    method = "zscore",
+                                    columns = st_cols)
+MICE_Z.out <- standardize_numerical(MICE_data.out,
+                                    method = "zscore",
+                                    columns = st_cols)
+
+MICE_Min <- standardize_numerical(MICE_data,
+                                    method = "minmax",
+                                    columns = st_cols)
+
+MICE_Min.out <- standardize_numerical(MICE_data.out,
+                                    method = "minmax",
+                                    columns = st_cols)
+```
+
+# Checking Overall Data Structure
+```{r}
+#Exploratory Factor Analysis to check overall data structure and determine if the sub-indicators can be combined into a single composite
+efa_data <- CCA_Z[c("SBP","DBP", "HDL" , "HBA1C","TC", "TRIGLYCERIDES","URINE_ALBUMIN" ,"URINE_CREATININE", "CRP","BMI","LDL", "GLUCOSE","FIBRINOGEN","PULSE","WAIST_CIRCUMFERENCE","INCOME","EDUCATION","PHYSICAL_ACTIVITY","TOBACCO","ALCOHOL")] 
+efa_data[c("TOBACCO","PHYSICAL_ACTIVITY","EDUCATION","INCOME","ALCOHOL")] <- lapply(efa_data[c("TOBACCO","PHYSICAL_ACTIVITY","EDUCATION","INCOME","ALCOHOL")], as.numeric)
+
+library(lavaan)
+fit <- efa(data = efa_data, nfactors = 1:6, rotation = "geomin")
+summary(fit,cutoff = 0.001)
+```
+
+# Variable Selection using penfa
+```{r}
+set.seed(123)
+library(tidyr)
+library(tibble)
+library(purrr)
+syntax <- "stress =~SBP + DBP + TC + HBA1C + HDL + TRIGLYCERIDES + URINE_ALBUMIN + URINE_CREATININE + BMI + CRP + LDL + GLUCOSE + FIBRINOGEN + PULSE + WAIST_CIRCUMFERENCE + EDUCATION + INCOME + ALCOHOL + TOBACCO + PHYSICAL_ACTIVITY"
+models <- MICE_Z %>%
+  group_by(.imp) %>%
+  nest() %>%
+  mutate(
+    penfa_fit = map(data, ~penfa(
+      model = syntax,
+      data = .x,
+      std.lv = TRUE,              # Standardize latent variables
+      pen.shrink = "alasso",      # Penalty: "alasso" (default sparsity-inducing); options: "lasso", "scad", "mcp", "ridge", "none"
+      eta = list(shrink = c("lambda" = 0.01), diff = c("none" = 0)),
+      strategy = "auto",          # Automatic tuning parameter selection (default)
+      gamma = 4,                  # Influence factor for auto strategy (default)
+      verbose = FALSE             # Suppress iteration output; set to TRUE for details
+    ))
+  ) %>%
+  ungroup()
+
+# Extract parameter matrices (including factor loadings) using penfaOut
+# penfaOut returns a list with lambda (loadings), tau (intercepts, if any), phi (factor cov), psi (unique variances)
+models <- models %>%
+  mutate(
+    par_mats = map(penfa_fit, penfaOut),
+    # Extract the factor loading matrix (lambda)
+    lambda = map(par_mats, ~.x$lambda),
+    # Extract unique (error) variances (diagonal of psi)
+    psi_diag = map(par_mats, ~diag(.x$psi)),
+    # Compute standardized loadings: lambda_ij / sqrt(psi_ii)  (since std.lv = TRUE, factor var = 1)
+    std_loadings = map2(lambda, psi_diag, ~{
+      std_mat <- .x / sqrt(.y)
+      rownames(std_mat) <- rownames(.x)  # observed variables
+      colnames(std_mat) <- colnames(.x)  # latent factors
+      std_mat
+    }),
+    # Convert to tidy format for easier filtering
+    loadings_tidy = map(std_loadings, ~as.data.frame(.) %>%
+                          rownames_to_column("rhs") %>%   # rhs = observed indicator
+                          pivot_longer(-rhs, names_to = "lhs", values_to = "est.std"))  # lhs = latent factor
+  )
+
+# Identify observed variables (rhs) with near-zero standardized loadings 
+# (|est.std| < 0.001) in EACH individual imputation
+models <- models %>%
+  mutate(
+    near_zero_vars = map(loadings_tidy, ~.x %>%
+                           filter(abs(est.std) == 0) %>%
+                           pull(rhs) %>%
+                           unique() %>%
+                           sort())
+  )
+
+# Results:
+# - models$near_zero_vars: list column with vectors of observed variable names 
+#   that have |standardized loading| = 0 in that specific imputation
+
+
+```
+
+
+```{r}
+set.seed(123)
+#model syntax
+syntax <- "stress =~SBP + DBP + TC + HBA1C + HDL + TRIGLYCERIDES + URINE_ALBUMIN + URINE_CREATININE + BMI + CRP + LDL + GLUCOSE + FIBRINOGEN + PULSE + WAIST_CIRCUMFERENCE + EDUCATION + INCOME + ALCOHOL + TOBACCO + PHYSICAL_ACTIVITY"
+
+#Penalized Factor Analysis Model
+fit <- penfa(## factor model
+                    model  = syntax,
+                    data   = CCA_Z,
+                    std.lv = TRUE,
+                    ## penalization
+                    pen.shrink = "alasso",
+                    eta = list(shrink = c("lambda" = 0.01), diff = c("none" = 0)),
+                    ## automatic procedure
+                    strategy = "auto",
+                    gamma = 4,
+                    verbose = FALSE)
+alasso.w <- coef(fit)
+print(alasso.w)
+
+
+```
+
+
+# Weighting
+### Boruta, Factor Analysis, and Component Scores
+```{r}
+library(randomForest)
+weight_boruta <- function(df){
+  set.seed(123)
+  target <- rowSums(x = df)
+  boruta_result <- Boruta(x = df, y = target,doTrace = 0)
+    
+  importance <- attStats(boruta_result)$meanImp
+  weights <- importance / sum(importance, na.rm = TRUE)
+  names(weights) <- rownames(attStats(boruta_result))
+  composite <- as.matrix(df) %*% weights
+  return(composite)
+}
+
+weight_FA <- function(df,meth = "FA"){
+  set.seed(123)
+  FA_fit <- efa(data = df, nfactors = 1, rotation = "geomin")
+  if(meth == "FA"){
+    weights <- FA_fit$loadings 
+    composite <- as.matrix(df) %*% weights
+    return(composite)
+  }else{
+    return(factor.scores(df,f = FA_fit, method = "Thurstone")$scores)
+  }
+}
+
+```
+
+```{r}
+library(lavaan)
+library(psych)
+#Function for weighting sub-indicators
+weighting_aggregation <- function(df,imp.type = "CCA"){
+ 
+  #i,tc,t: 1,4,6-9,12,14-16,20,23,25,26,30,31,33-35,37,38 (Penfa model vars to remove for imputed datasets)
+  #i,tc: 2,3,5,10,11,13,17-19,21,22,24,27-29,32,36  (i = income, t = tobacco, tc = total_cholesterol)
+  #Base AL/CSI constructions
+  composites <- list(
+    AL15 = c("SBP", "DBP", "TC", "HBA1C", "HDL", "TRIGLYCERIDES", "URINE_ALBUMIN", "URINE_CREATININE", "BMI", "CRP", "LDL", "GLUCOSE", "FIBRINOGEN", "PULSE", "WAIST_CIRCUMFERENCE", "EDUCATION", "INCOME", "ALCOHOL", "TOBACCO", "PHYSICAL_ACTIVITY"),
+    AL10 = c("SBP", "DBP", "TC", "HBA1C", "HDL", "TRIGLYCERIDES", "URINE_ALBUMIN", "URINE_CREATININE", "BMI", "CRP"),
+    AL5 = c("SBP", "DBP", "TC", "HBA1C", "BMI"),
+    CSI20 = c("SBP", "DBP", "TC", "HBA1C", "HDL", "TRIGLYCERIDES", "URINE_ALBUMIN", "URINE_CREATININE", "BMI", "CRP", "LDL", "GLUCOSE", "FIBRINOGEN", "PULSE", "WAIST_CIRCUMFERENCE", "EDUCATION", "INCOME", "ALCOHOL", "TOBACCO", "PHYSICAL_ACTIVITY"),
+    CSI15 = c("SBP", "DBP", "TC", "HBA1C", "HDL", "TRIGLYCERIDES", "URINE_ALBUMIN", "URINE_CREATININE", "BMI", "CRP", "EDUCATION", "INCOME", "ALCOHOL", "TOBACCO", "PHYSICAL_ACTIVITY"),
+    CSI5 = c("EDUCATION", "INCOME", "ALCOHOL", "TOBACCO", "PHYSICAL_ACTIVITY"),
+    AL15.q = c("SBP.q", "DBP.q", "TC.q", "HBA1C.q", "HDL.q", "TG.q", "ALB.q", "CLCR.q", "BMI.q", "CRP.q", "LDL.q", "GLUCOSE.q", "FIB.q", "PULSE.q", "WC.q", "EDUCATION", "INCOME", "ALCOHOL", "TOBACCO", "PHYSICAL_ACTIVITY"),
+    AL10.q = c("SBP.q", "DBP.q", "TC.q", "HBA1C.q", "HDL.q", "TG.q", "ALB.q", "CLCR.q", "BMI.q", "CRP.q"),
+    AL5.q = c("SBP.q", "DBP.q", "TC.q", "HBA1C.q", "BMI.q"),
+    CSI20.q = c("SBP.q", "DBP.q", "TC.q", "HBA1C.q", "HDL.q", "TG.q", "ALB.q", "CLCR.q", "BMI.q", "CRP.q", "LDL.q", "GLUCOSE.q", "FIB.q", "PULSE.q", "WC.q", "EDUCATION", "INCOME", "ALCOHOL", "TOBACCO", "PHYSICAL_ACTIVITY"),
+    CSI15.q = c("SBP.q", "DBP.q", "TC.q", "HBA1C.q", "HDL.q", "TG.q", "ALB.q", "CLCR.q", "BMI.q", "CRP.q", "EDUCATION", "INCOME", "ALCOHOL", "TOBACCO", "PHYSICAL_ACTIVITY"),
+    CSI5.q = c("EDUCATION", "INCOME", "ALCOHOL", "TOBACCO", "PHYSICAL_ACTIVITY"))
+  #Columns to dichotomize
+  di_cols <- c("AL15.q","AL10.q","AL5.q","CSI20.q","CSI15.q","CSI5.q","CSIAUTO.q",
+             "AL15.q.boruta","AL10.q.boruta","AL5.q.boruta","CSI20.q.boruta","CSI15.q.boruta","CSI5.q.boruta","CSIAUTO.q.boruta",
+             "AL15.q.FA","AL10.q.FA","AL5.q.FA","CSI20.q.FA","CSI15.q.FA","CSI5.q.FA","CSIAUTO.q.FA",
+             "AL15.q.FA_SCORES","AL10.q.FA_SCORES","AL5.q.FA_SCORES","CSI20.q.FA_SCORES","CSI15.q.FA_SCORES","CSI5.q.FA_SCORES","CSIAUTO.q.FA_SCORES")
+  
+  if(imp.type == "MICE"){
+    ct <- 1
+    imp_set <- c(1,4,6,7,8,9,12,14,15,16,20,23,25,26,30,31,33,34,35,37,38)
+    for (imp in unique(df$.imp)) {
+      print(ct)
+      ct <- ct + 1
+      rows <- df$.imp == imp
+      if (imp %in% imp_set) {
+        CSIAUTO <- c("SBP", "DBP", "HBA1C", "HDL", "TRIGLYCERIDES", "URINE_ALBUMIN", "URINE_CREATININE", "BMI", "CRP", "LDL", "GLUCOSE", "FIBRINOGEN", "PULSE", "WAIST_CIRCUMFERENCE", "EDUCATION", "ALCOHOL", "PHYSICAL_ACTIVITY")
+        CSIAUTO.q <- c("SBP.q", "DBP.q", "HBA1C.q", "HDL.q", "TG.q", "ALB.q", "CLCR.q", "BMI.q", "CRP.q", "LDL.q", "GLUCOSE.q", "FIB.q", "PULSE.q", "WC.q", "EDUCATION", "ALCOHOL", "PHYSICAL_ACTIVITY")
+         
+      }else {
+          CSIAUTO <- c("SBP", "DBP", "HBA1C", "HDL", "TRIGLYCERIDES", "URINE_ALBUMIN", "URINE_CREATININE", "BMI", "CRP", "LDL", "GLUCOSE", "FIBRINOGEN", "PULSE", "WAIST_CIRCUMFERENCE", "EDUCATION", "ALCOHOL", "TOBACCO", "PHYSICAL_ACTIVITY")
+          CSIAUTO.q <- c("SBP.q", "DBP.q", "HBA1C.q", "HDL.q", "TG.q", "ALB.q", "CLCR.q", "BMI.q", "CRP.q", "LDL.q", "GLUCOSE.q", "FIB.q", "PULSE.q", "WC.q", "EDUCATION", "ALCOHOL", "TOBACCO", "PHYSICAL_ACTIVITY")
+      } 
+      local_comp <- c(composites,list(CSIAUTO = CSIAUTO,CSIAUTO.q = CSIAUTO.q))
+      for (nm in names(local_comp)) {
+        cols <- local_comp[[nm]]
+        sub  <- df[rows, cols]
+        df[rows,nm] <- rowSums(sub)
+        suffix <- ".boruta"
+        df[rows,paste0(nm, suffix)] <- weight_boruta(sub)
+        suffix <- ".FA"
+        df[rows,paste0(nm, suffix)] <- weight_FA(sub,"FA")
+        suffix <- ".FA_SCORES"
+        df[rows,paste0(nm, suffix)] <- weight_FA(sub,"FA_SCORES") 
+  
+      
+      }
+      for (cl in di_cols) {
+        
+        m <- mean(df[rows,][[cl]], na.rm = TRUE)
+        df[rows, cl] <- ifelse(df[rows, cl] > m,1,0)
+          
+    }
+        }
+      
+    }else{
+    
+    CSIAUTO <- c("SBP", "DBP", "HBA1C", "HDL", "TRIGLYCERIDES", "URINE_CREATININE", "BMI", "CRP", "LDL", "GLUCOSE", "FIBRINOGEN", "PULSE", "WAIST_CIRCUMFERENCE", "EDUCATION", "ALCOHOL", "TOBACCO", "PHYSICAL_ACTIVITY")
+    CSIAUTO.q <- c("SBP.q", "DBP.q", "HBA1C.q", "HDL.q", "TG.q", "CLCR.q", "BMI.q", "CRP.q", "LDL.q", "GLUCOSE.q", "FIB.q", "PULSE.q", "WC.q", "EDUCATION", "ALCOHOL", "TOBACCO", "PHYSICAL_ACTIVITY")
+    local_comp <- c(composites,list(CSIAUTO = CSIAUTO,CSIAUTO.q = CSIAUTO.q))
+    
+    for (nm in names(local_comp)) {
+      sub <- df[,local_comp[[nm]]]
+      df[,nm] <- rowSums(sub)
+      suffix <- ".boruta"
+      df[,paste0(nm, suffix)] <- weight_boruta(sub)
+      suffix <- ".FA"
+      df[,paste0(nm, suffix)] <- weight_FA(sub,"FA")
+      suffix <- ".FA_SCORES"
+      df[,paste0(nm, suffix)] <- weight_FA(sub,"FA_SCORES")
+    }
+    for (cl in di_cols) {
+      m <- mean(df[[cl]], na.rm = TRUE)
+      df[, cl] <- ifelse(df[, cl] > m,1,0)
+  }
+  
+    }
+  
+ return(df)
+}
+
+```
+###CCA
+```{r}
+st_cols <- c("AL15","AL10","AL5","CSI20","CSI15","CSI5","CSIAUTO",
+             "AL15.boruta","AL10.boruta","AL5.boruta","CSI20.boruta","CSI15.boruta","CSI5.boruta","CSIAUTO.boruta",
+             "AL15.FA","AL10.FA","AL5.FA","CSI20.FA","CSI15.FA","CSI5.FA","CSIAUTO.FA",
+             "AL15.FA_SCORES","AL10.FA_SCORES","AL5.FA_SCORES","CSI20.FA_SCORES","CSI15.FA_SCORES","CSI5.FA_SCORES","CSIAUTO.FA_SCORES")
+CCA_Z.w <- standardize_numerical(weighting_aggregation(CCA_Z,"CCA"),"zscore",st_cols)
+CCA_Z.out.w <- standardize_numerical(weighting_aggregation(CCA_Z.out,"CCA"),"zscore",st_cols)
+
+CCA_Min.w <- standardize_numerical(weighting_aggregation(CCA_Min,"CCA"),"zscore",st_cols)
+CCA_Min.out.w <- standardize_numerical(weighting_aggregation(CCA_Min.out,"CCA"),"zscore",st_cols)
+```
+###MICE
+```{r}
+MICE_Z.w <- standardize_numerical(weighting_aggregation(MICE_Z,"MICE"),"zscore",st_cols)
+MICE_Z.out.w <- standardize_numerical(weighting_aggregation(MICE_Z.out,"MICE"),"zscore",st_cols)
+
+MICE_Min.w <- standardize_numerical(weighting_aggregation(MICE_Min,"MICE"),"zscore",st_cols)
+MICE_Min.out.w <- standardize_numerical(weighting_aggregation(MICE_Min.out,"MICE"),"zscore",st_cols)
+
+```
+
+# Linear/Logistic Regression
+```{r}
+library(stats)
+fit_models <- function(df, formulas, family = NULL) {
+
+  imps <- sort(unique(df$.imp))
+  imps <- imps[imps != 0]
+
+  lapply(formulas, function(fml) {
+
+    lapply(imps, function(imp) {
+
+      d <- df[df$.imp == imp, ]
+
+      if (is.null(family)) {
+        lm(fml, data = d)
+      } else {
+        glm(fml, data = d, family = family)
+      }
+
+    })
+
+  })
+}
+pool_rubin <- function(models, var, mod.type = "linear") {
+  # For factors: find the coefficient that corresponds to this variable
+  # (it will be the only one starting with var followed by the second level)
+  get_est <- function(m) {
+    coefs <- coef(summary(m))
+    rowname <- rownames(coefs)[grepl(paste0("^", var), rownames(coefs))]
+    # Remove AGE and SEX rows (they also match if var is short)
+    rowname <- rowname[!rowname %in% c("(Intercept)", "AGE", "SEX")]
+    if (length(rowname) == 0) stop(paste("No coefficient found for", var))
+    # For binary factors there should be exactly one
+    coefs[rowname, "Estimate"]
+  }
+  
+  get_se <- function(m) {
+    coefs <- coef(summary(m))
+    rowname <- rownames(coefs)[grepl(paste0("^", var), rownames(coefs))]
+    rowname <- rowname[!rowname %in% c("(Intercept)", "AGE", "SEX")]
+    if (length(rowname) == 0) stop(paste("No coefficient found for", var))
+    coefs[rowname, "Std. Error"]
+  }
+  
+  est <- sapply(models, get_est)
+  se  <- sapply(models, get_se)
+  m <- length(est)
+  
+  Qbar <- mean(est)
+  Ubar <- mean(se^2)
+  B <- var(est)
+  
+  Tvar <- Ubar + (1 + 1/m) * B
+  Tsd  <- sqrt(Tvar)
+  
+  if (mod.type == "linear") {
+    tval <- Qbar / Tsd
+    df   <- (m - 1) * (1 + Ubar / ((1 + 1/m) * B))^2
+    pval <- 2 * pt(abs(tval), df = df, lower.tail = FALSE)
+    # R² only makes sense for lm
+    r2 <- mean(sapply(models, function(m) summary(m)$r.squared))
+    return(c(p_value = pval, r_squared = r2))
+  } else {  # logistic
+    zval <- Qbar / Tsd
+    pval <- 2 * pnorm(abs(zval), lower.tail = FALSE)
+    return(pval)
+  }
+}
+#Rubin's Rules for Pooling parameter estimates 
+pool_temp <- function(models, var, mod.type = "linear") {
+  est <- sapply(models, function(m) coef(m)[var])
+  se  <- sapply(models, function(m) summary(m)$coef[var, "Std. Error"])
+  m <- length(est)
+  
+  Qbar <- mean(est)
+  Ubar <- mean(se^2)
+  B <- var(est)
+  
+  Tvar <- Ubar + (1 + 1/m) * B
+  Tsd  <- sqrt(Tvar)
+  
+  if(mod.type == "linear"){
+    tval <- Qbar / Tsd
+    df   <- (m - 1) * (1 + Ubar / ((1 + 1/m) * B))^2
+    pval <- 2 * pt(abs(tval), df = df, lower.tail = FALSE)
+    r2 <- mean(sapply(models, function(m) summary(m)$r.squared))
+    return(c(p_value = pval,r_squared = r2))
+  }else{
+    zval <- Qbar / Tsd
+    pval <- 2 * pnorm(abs(zval), lower.tail = FALSE)
+    return(pval)
+  }
+
+}
+
+add_linear_results <- function(df, fits, var, suffix) {
+  for (v in var) {
+    res <- pool_rubin(fits[[v]], v, "linear")
+    df[v, paste0("P_VALUE.", suffix)]  <- res["p_value"]
+    df[v, paste0("R2.",suffix)] <- res["r_squared"]
+  }
+
+  return(df)
+}
+
+add_logistic_results <- function(df, fits, var, suffix) {
+
+  for (v in var) {
+    df[v, paste0("P_VALUE.",suffix)] <- pool_rubin(fits[[v]], v, "logistic")
+  }
+
+  return(df)
+}
+linear_logistic <- function(df,meth = "CCA"){
+  set.seed(123)
+  vars <- c("AL15","AL10","AL5","CSI20","CSI15","CSI5","CSIAUTO",
+             "AL15.boruta","AL10.boruta","AL5.boruta","CSI20.boruta","CSI15.boruta","CSI5.boruta","CSIAUTO.boruta",
+             "AL15.FA","AL10.FA","AL5.FA","CSI20.FA","CSI15.FA","CSI5.FA","CSIAUTO.FA",
+             "AL15.FA_SCORES","AL10.FA_SCORES","AL5.FA_SCORES","CSI20.FA_SCORES","CSI15.FA_SCORES","CSI5.FA_SCORES","CSIAUTO.FA_SCORES",
+             "AL15.q","AL10.q","AL5.q","CSI20.q","CSI15.q","CSI5.q","CSIAUTO.q",
+             "AL15.q.boruta","AL10.q.boruta","AL5.q.boruta","CSI20.q.boruta","CSI15.q.boruta","CSI5.q.boruta","CSIAUTO.q.boruta",
+             "AL15.q.FA","AL10.q.FA","AL5.q.FA","CSI20.q.FA","CSI15.q.FA","CSI5.q.FA","CSIAUTO.q.FA",
+             "AL15.q.FA_SCORES","AL10.q.FA_SCORES","AL5.q.FA_SCORES","CSI20.q.FA_SCORES","CSI15.q.FA_SCORES","CSI5.q.FA_SCORES","CSIAUTO.q.FA_SCORES")
+  #Formulas for models 
+  pss.mods <- setNames(lapply(paste("PSS ~ AGE + SEX + ", vars), as.formula),
+                       vars)
+  swls.mods <- setNames(lapply(paste("SWLS ~ AGE + SEX + ", vars), as.formula),
+                        vars)
+  dofor.mods <- setNames(lapply(paste("DOFOR ~ AGE + SEX + ", vars), as.formula),
+                         vars)
+  nolsacc.mods <- setNames(lapply(paste("NOLSACC ~ AGE + SEX + ", vars), as.formula),
+                           vars)
+  
+  #Dataframe for model estimates and rankings
+  ranks <- data.frame(P_VALUE.PSS = 1:56,
+                     R2.PSS = 1:56,
+                     P_VALUE.SWLS = 1:56,
+                     R2.SWLS = 1:56,
+                     P_VALUE.DOFOR = 1:56,
+                     P_VALUE.NOLSACC = 1:56,
+                     R2.NOLSACC = 1:56,
+                     RANK.PSS.p = 1:56,
+                     RANK.PSS.R = 1:56,             
+                     RANK.SWLS.p = 1:56,      
+                     RANK.SWLS.R = 1:56,
+                     RANK.DOFOR.p = 1:56,
+                     RANK.NOLSACC.p = 1:56,
+                     RANK.NOLSACC.R = 1:56) 
+  rownames(ranks) <- vars
+  
+  #Check if data is CCA or MICE
+  if(meth == "MICE"){
+    pss.fits     <- fit_models(df, pss.mods)
+    swls.fits    <- fit_models(df, swls.mods)
+    nolsacc.fits <- fit_models(df, nolsacc.mods)
+    df <- df %>%
+    mutate(across(all_of(c("AL15.q","AL10.q","AL5.q","CSI20.q","CSI15.q","CSI5.q","CSIAUTO.q",
+             "AL15.q.boruta","AL10.q.boruta","AL5.q.boruta","CSI20.q.boruta","CSI15.q.boruta","CSI5.q.boruta","CSIAUTO.q.boruta",
+             "AL15.q.FA","AL10.q.FA","AL5.q.FA","CSI20.q.FA","CSI15.q.FA","CSI5.q.FA","CSIAUTO.q.FA",
+             "AL15.q.FA_SCORES","AL10.q.FA_SCORES","AL5.q.FA_SCORES","CSI20.q.FA_SCORES","CSI15.q.FA_SCORES","CSI5.q.FA_SCORES","CSIAUTO.q.FA_SCORES")), as.factor))
+    dofor.fits <- fit_models(df,
+                             dofor.mods,
+                             family = binomial())
+    ranks <- add_linear_results(ranks, pss.fits, vars, "PSS")
+    ranks <- add_linear_results(ranks, swls.fits, vars, "SWLS")
+    ranks <- add_linear_results(ranks, nolsacc.fits, vars, "NOLSACC")
+    ranks <- add_logistic_results(ranks, dofor.fits, vars, "DOFOR")
+  }else{
+    for (i in 1:length(vars)) {
+      constr <- vars[i]
+      
+      #PSS
+      fit <- lapply(pss.mods, function(x) lm(x,data = df))
+      ranks[constr,"P_VALUE.PSS"] = round(coef(summary(fit[[i]]))[,4][4],5)
+      ranks[constr,"R2.PSS"] = round(summary(fit[[i]])$r.squared,5)
+      
+      #SWLS
+      fit <- lapply(swls.mods, function(x) lm(x,data = df))
+      ranks[constr,"P_VALUE.SWLS"] = round(coef(summary(fit[[i]]))[,4][4],5)
+      ranks[constr,"R2.SWLS"] = round(summary(fit[[i]])$r.squared,5)
+      
+      #NOLSACC
+      fit <- lapply(nolsacc.mods, function(x) lm(x,data = df))
+      ranks[constr,"P_VALUE.NOLSACC"] = round(coef(summary(fit[[i]]))[,4][4],5)
+      ranks[constr,"R2.NOLSACC"] = round(summary(fit[[i]])$r.squared,5)
+      
+      #DOFOR
+      df[c("AL15.q","AL10.q","AL5.q","CSI20.q","CSI15.q","CSI5.q","CSIAUTO.q",
+             "AL15.q.boruta","AL10.q.boruta","AL5.q.boruta","CSI20.q.boruta","CSI15.q.boruta","CSI5.q.boruta","CSIAUTO.q.boruta",
+             "AL15.q.FA","AL10.q.FA","AL5.q.FA","CSI20.q.FA","CSI15.q.FA","CSI5.q.FA","CSIAUTO.q.FA",
+             "AL15.q.FA_SCORES","AL10.q.FA_SCORES","AL5.q.FA_SCORES","CSI20.q.FA_SCORES","CSI15.q.FA_SCORES","CSI5.q.FA_SCORES","CSIAUTO.q.FA_SCORES")] <- lapply(df[c("AL15.q","AL10.q","AL5.q","CSI20.q","CSI15.q","CSI5.q","CSIAUTO.q",
+             "AL15.q.boruta","AL10.q.boruta","AL5.q.boruta","CSI20.q.boruta","CSI15.q.boruta","CSI5.q.boruta","CSIAUTO.q.boruta",
+             "AL15.q.FA","AL10.q.FA","AL5.q.FA","CSI20.q.FA","CSI15.q.FA","CSI5.q.FA","CSIAUTO.q.FA",
+             "AL15.q.FA_SCORES","AL10.q.FA_SCORES","AL5.q.FA_SCORES","CSI20.q.FA_SCORES","CSI15.q.FA_SCORES","CSI5.q.FA_SCORES","CSIAUTO.q.FA_SCORES")], factor)
+      fit <- lapply(dofor.mods, function(x) glm(x,data = df,family = "binomial",na.action = na.omit))
+      ranks[constr,"P_VALUE.DOFOR"] = round(coef(summary(fit[[i]]))[,4][4],5)
+      
+      
+    }
+    
+  }
+  ranks$RANK.PSS.p <- rank(ranks$P_VALUE.PSS,ties.method = "average")
+  ranks$RANK.PSS.R <- rank(-ranks$R2.PSS,ties.method = "average")
+  ranks$RANK.SWLS.p <- rank(ranks$P_VALUE.SWLS,ties.method = "average")
+  ranks$RANK.SWLS.R <- rank(-ranks$R2.SWLS,ties.method = "average")
+  ranks$RANK.DOFOR.p <- rank(ranks$P_VALUE.DOFOR,ties.method = "average")
+  ranks$RANK.NOLSACC.p <- rank(ranks$P_VALUE.NOLSACC,ties.method = "average")
+  ranks$RANK.NOLSACC.R <- rank(-ranks$R2.NOLSACC,ties.method = "average")
+                              
+  return(ranks)
+}
+
+```
+
+
+
+
+###CCA
+```{r}
+CCA_Z.Rank <- linear_logistic(CCA_Z.w,"CCA")
+write.xlsx(data.frame(Rows = row.names(CCA_Z.Rank),CCA_Z.Rank), '/Users/mhill/Desktop/CMV_Research/Dissertation/CCA_Z_Rank.xlsx')
+CCA_Z.out.Rank <- linear_logistic(CCA_Z.out.w,"CCA")
+write.xlsx(data.frame(Rows = row.names(CCA_Z.out.Rank),CCA_Z.out.Rank), '/Users/mhill/Desktop/CMV_Research/Dissertation/CCA_Z_out_Rank.xlsx')
+
+CCA_Min.Rank <- linear_logistic(CCA_Min.w,"CCA")
+write.xlsx(data.frame(Rows = row.names(CCA_Min.Rank),CCA_Min.Rank), '/Users/mhill/Desktop/CMV_Research/Dissertation/CCA_Min_Rank.xlsx')
+CCA_Min.out.Rank <- linear_logistic(CCA_Min.out.w,"CCA")
+write.xlsx(data.frame(Rows = row.names(CCA_Min.out.Rank),CCA_Min.out.Rank), '/Users/mhill/Desktop/CMV_Research/Dissertation/CCA_Min_out_Rank.xlsx')
+```
+
+###MICE
+```{r}
+MICE_Z.Rank <- linear_logistic(MICE_Z.w,"MICE")
+write.xlsx(data.frame(Rows = row.names(MICE_Z.Rank),MICE_Z.Rank), '/Users/mhill/Desktop/CMV_Research/Dissertation/MICE_Z_Rank.xlsx')
+MICE_Z.out.Rank <- linear_logistic(MICE_Z.out.w,"MICE")
+write.xlsx(data.frame(Rows = row.names(MICE_Z.out.Rank),MICE_Z.out.Rank), '/Users/mhill/Desktop/CMV_Research/Dissertation/MICE_Z_out_Rank.xlsx')
+
+MICE_Min.Rank <- linear_logistic(MICE_Min.w,"MICE")
+write.xlsx(data.frame(Rows = row.names(MICE_Min.Rank),MICE_Min.Rank), '/Users/mhill/Desktop/CMV_Research/Dissertation/MICE_Min_Rank.xlsx')
+MICE_Min.out.Rank <- linear_logistic(MICE_Min.out.w,"MICE")
+write.xlsx(data.frame(Rows = row.names(MICE_Min.out.Rank),MICE_Min.out.Rank), '/Users/mhill/Desktop/CMV_Research/Dissertation/MICE_Min_out_Rank.xlsx')
+
+```
+
+# Plotting of results
+## CCA
+```{r}
+library(ggplot2)
+library(readxl)
+var_ct <- c(15,10,5,20,15,5,17,15,10,5,20,15,5,17,15,
+            10,5,20,15,5,
+            17,15,10,5,20,
+            15,5,17,15,10,
+            5,20,15,5,17,
+            15,10,5,20,15,
+            5,17,15,10,5,
+            20,15,5,17,15,
+            10,5,20,15,5,17)
+Rankings <- CCA_Z.Rank %>% select(c("RANK.PSS.p","RANK.PSS.R","RANK.SWLS.p","RANK.SWLS.R","RANK.DOFOR.p","RANK.NOLSACC.p","RANK.NOLSACC.R")) %>% mutate(Count = as.factor(var_ct),Rows = row.names(CCA_Z.Rank))
+
+res_plot <-  Rankings %>% ggplot(aes(x=reorder(Rows,as.numeric(Count)))) + geom_point(aes(y=RANK.PSS.R,color = "PSS"),size = 4,shape = "circle") + geom_point(aes(y=RANK.SWLS.R,color = "SWLS"),size = 4,shape = "square") + geom_point(aes(y=RANK.NOLSACC.R,color = "NOLSACC"),size = 4,shape = "triangle") + geom_hline(yintercept = 10) + geom_hline(yintercept = 20) + labs(x= "AL/CSI Construction",y="Rank",color = "Validation Vars")  + theme(text = element_text(size = 14), legend.position = "top") + coord_flip() + theme(panel.grid.major = element_line(color = 'grey')) 
+res_plot
+#pdf("/Users/mhill/Desktop/CMV_Research/Dissertation/BASE_R.pdf",width = 10,height = 9)
+#print(res_plot)
+#dev.off()
+
+res_plot <-  Rankings %>% ggplot(aes(x=reorder(Rows,as.numeric(Count)))) + geom_point(aes(y=RANK.PSS.p,color = "PSS"),size = 4,shape = "circle") + geom_point(aes(y=RANK.SWLS.p,color = "SWLS"),size = 4,shape = "square") + geom_point(aes(y=RANK.NOLSACC.p,color = "NOLSACC"),size = 4,shape = "triangle") + geom_point(aes(y=RANK.DOFOR.p,color = "DOFOR"),size = 5,shape="diamond")+ geom_hline(yintercept = 10) + geom_hline(yintercept = 20) + labs(x= "AL/CSI Construction",y="Rank",color = "Validation Vars")  + theme(text = element_text(size = 14), legend.position = "top") + coord_flip() + theme(panel.grid.major = element_line(color = 'grey')) 
+res_plot
+#pdf("/Users/mhill/Desktop/CMV_Research/Dissertation/BASE_P.pdf",width = 10,height = 9)
+#print(res_plot)
+#dev.off()
+```
+
+
+## MICE
+```{r}
+Rankings <- MICE_Z.Rank %>% select(c("RANK.PSS.p","RANK.PSS.R","RANK.SWLS.p","RANK.SWLS.R","RANK.DOFOR.p","RANK.NOLSACC.p","RANK.NOLSACC.R")) %>% mutate(Count = as.factor(var_ct),Rows = row.names(MICE_Z.Rank))
+
+res_plot <-  Rankings %>% ggplot(aes(x=reorder(Rows,as.numeric(Count)))) + geom_point(aes(y=RANK.PSS.R,color = "PSS"),size = 4,shape = "circle") + geom_point(aes(y=RANK.SWLS.R,color = "SWLS"),size = 4,shape = "square") + geom_point(aes(y=RANK.NOLSACC.R,color = "NOLSACC"),size = 4,shape = "triangle") + geom_hline(yintercept = 10) + geom_hline(yintercept = 20) + labs(x= "AL/CSI Construction",y="Rank",color = "Validation Vars")  + theme(text = element_text(size = 14), legend.position = "top") + coord_flip() + theme(panel.grid.major = element_line(color = 'grey')) 
+res_plot
+#pdf("/Users/mhill/Desktop/CMV_Research/Dissertation/MICE_R.pdf",width = 10,height = 9)
+#print(res_plot)
+#dev.off()
+
+res_plot <-  Rankings %>% ggplot(aes(x=reorder(Rows,as.numeric(Count)))) + geom_point(aes(y=RANK.PSS.p,color = "PSS"),size = 4,shape = "circle") + geom_point(aes(y=RANK.SWLS.p,color = "SWLS"),size = 4,shape = "square") + geom_point(aes(y=RANK.NOLSACC.p,color = "NOLSACC"),size = 4,shape = "triangle") + geom_point(aes(y=RANK.DOFOR.p,color = "DOFOR"),size = 5,shape="diamond")+ geom_hline(yintercept = 10) + geom_hline(yintercept = 20) + labs(x= "AL/CSI Construction",y="Rank",color = "Validation Vars")  + theme(text = element_text(size = 14), legend.position = "top") + coord_flip() + theme(panel.grid.major = element_line(color = 'grey')) 
+res_plot
+#pdf("/Users/mhill/Desktop/CMV_Research/Dissertation/MICE_P.pdf",width = 10,height = 9)
+#print(res_plot)
+#dev.off()
+```
+
+
+# Uncertainty/Sensitivty Analysis
+## R_s
+```{r}
+rank.names <- c("RANK.PSS.p","RANK.SWLS.p",
+                "RANK.DOFOR.p","RANK.NOLSACC.p")
+
+# Extract AL10 as reference (single row)
+ref_row <- unlist(CCA_Z.Rank["AL10", rank.names, drop = FALSE])
+# Your comparison list
+comp_rank <- list(
+  "CCA_Z"       = CCA_Z.Rank[, rank.names],
+  "CCA_Z.out"   = CCA_Z.out.Rank[, rank.names],
+  "CCA_Min"     = CCA_Min.Rank[, rank.names],
+  "CCA_Min.out" = CCA_Min.out.Rank[, rank.names],
+  "MICE_Z"      = MICE_Z.Rank[, rank.names],
+  "MICE_Z.out"  = MICE_Z.out.Rank[, rank.names],
+  "MICE_Min"    = MICE_Min.Rank[, rank.names],
+  "MICE_Min.out"= MICE_Min.out.Rank[, rank.names]
+)
+df <- data.frame(RANK.PSS.p = 1:8,
+                 RANK.SWLS.p = 1:8,
+                RANK.DOFOR.p = 1:8,
+                RANK.NOLSACC.p = 1:8,
+                row.names = names(comp_rank))
+# Compute
+for (nm in names(comp_rank)) {
+  abs_diff <- abs(ref_row - comp_rank[[nm]])
+  df[nm, ] <- colSums(abs_diff) / 56
+}
+
+df <- round(df, 2)
+print(df)
+```
+
+## Graphs
+```{r}
+rank.names <- c("RANK.PSS.p","RANK.SWLS.p",
+                "RANK.DOFOR.p","RANK.NOLSACC.p",
+                "RANK.PSS.R","RANK.SWLS.R","RANK.NOLSACC.R")
+
+uncertainty <- function(x,y){
+  Rankings <- abs(comp_rank[[x]] - comp_rank[[y]]) %>% mutate(Count = as.factor(var_ct),Rows = row.names(CCA_Z.Rank))
+  comp_name <- paste0(x,"_v_",y)
+  comp_r <- paste0("/Users/mhill/Desktop/CMV_Research/Dissertation/",comp_name,"_R.pdf") 
+  comp_p <- paste0("/Users/mhill/Desktop/CMV_Research/Dissertation/",comp_name,"_P.pdf")
+  res_plot <-  Rankings %>% ggplot(aes(x=reorder(Rows,as.numeric(Count)))) + geom_point(aes(y=RANK.PSS.R,color = "PSS"),size = 4,shape = "circle") + geom_point(aes(y=RANK.SWLS.R,color = "SWLS"),size = 4,shape = "square") + geom_point(aes(y=RANK.NOLSACC.R,color = "NOLSACC"),size = 4,shape = "triangle") + geom_hline(yintercept = 10) + geom_hline(yintercept = 20) + labs(x= "AL/CSI Construction",y="Shift in Rank",color = "Validation Vars")  + theme(text = element_text(size = 14), legend.position = "top") + coord_flip() + theme(panel.grid.major = element_line(color = 'grey')) 
+  res_plot
+  pdf(comp_r,width = 10,height = 9)
+  print(res_plot)
+  dev.off()
+  
+  res_plot <-  Rankings %>% ggplot(aes(x=reorder(Rows,as.numeric(Count)))) + geom_point(aes(y=RANK.PSS.p,color = "PSS"),size = 4,shape = "circle") + geom_point(aes(y=RANK.SWLS.p,color = "SWLS"),size = 4,shape = "square") + geom_point(aes(y=RANK.NOLSACC.p,color = "NOLSACC"),size = 4,shape = "triangle") + geom_point(aes(y=RANK.DOFOR.p,color = "DOFOR"),size = 5,shape="diamond")+ geom_hline(yintercept = 10) + geom_hline(yintercept = 20) + labs(x= "AL/CSI Construction",y="Shift in Rank",color = "Validation Vars")  + theme(text = element_text(size = 14), legend.position = "top") + coord_flip() + theme(panel.grid.major = element_line(color = 'grey')) 
+  res_plot
+  pdf(comp_p,width = 10,height = 9)
+  print(res_plot)
+  dev.off()
+}
+
+```
+
+```{r}
+a.comp <- combinations(8,2,names(comp_rank))
+for (i in 1:nrow(a.comp)) {
+  uncertainty(a.comp[i,1],a.comp[i,2])
+}
+
+```
+
+## Omega Function
+```{r eval=FALSE, include=FALSE}
+omega.fun <- function(x) {
+  fit <- factanal(x,factors = 1)
+  lambda <- fit$loadings
+  ev <- fit$uniquenesses
+  # Calculate Omega Total (ω) using the formula:
+  sum_lambda_squared <- (sum(lambda))^2  
+  sum_error_variance <- sum(ev)  
+  
+  # Calculate Omega Total
+  omega_total <- sum_lambda_squared / (sum_lambda_squared + sum_error_variance)
+  return(omega_total)
+}
+```
+
+```{r}
+composites <- list(
+    AL15 = c("SBP", "DBP", "TC", "HBA1C", "HDL", "TRIGLYCERIDES", "URINE_ALBUMIN", "URINE_CREATININE", "BMI", "CRP", "LDL", "GLUCOSE", "FIBRINOGEN", "PULSE", "WAIST_CIRCUMFERENCE", "EDUCATION", "INCOME", "ALCOHOL", "TOBACCO", "PHYSICAL_ACTIVITY"),
+    AL10 = c("SBP", "DBP", "TC", "HBA1C", "HDL", "TRIGLYCERIDES", "URINE_ALBUMIN", "URINE_CREATININE", "BMI", "CRP"),
+    AL5 = c("SBP", "DBP", "TC", "HBA1C", "BMI"),
+    CSI20 = c("SBP", "DBP", "TC", "HBA1C", "HDL", "TRIGLYCERIDES", "URINE_ALBUMIN", "URINE_CREATININE", "BMI", "CRP", "LDL", "GLUCOSE", "FIBRINOGEN", "PULSE", "WAIST_CIRCUMFERENCE", "EDUCATION", "INCOME", "ALCOHOL", "TOBACCO", "PHYSICAL_ACTIVITY"),
+    CSI15 = c("SBP", "DBP", "TC", "HBA1C", "HDL", "TRIGLYCERIDES", "URINE_ALBUMIN", "URINE_CREATININE", "BMI", "CRP", "EDUCATION", "INCOME", "ALCOHOL", "TOBACCO", "PHYSICAL_ACTIVITY"),
+    CSI5 = c("EDUCATION", "INCOME", "ALCOHOL", "TOBACCO", "PHYSICAL_ACTIVITY"),
+    AL15.q = c("SBP.q", "DBP.q", "TC.q", "HBA1C.q", "HDL.q", "TG.q", "ALB.q", "CLCR.q", "BMI.q", "CRP.q", "LDL.q", "GLUCOSE.q", "FIB.q", "PULSE.q", "WC.q", "EDUCATION", "INCOME", "ALCOHOL", "TOBACCO", "PHYSICAL_ACTIVITY"),
+    AL10.q = c("SBP.q", "DBP.q", "TC.q", "HBA1C.q", "HDL.q", "TG.q", "ALB.q", "CLCR.q", "BMI.q", "CRP.q"),
+    AL5.q = c("SBP.q", "DBP.q", "TC.q", "HBA1C.q", "BMI.q"),
+    CSI20.q = c("SBP.q", "DBP.q", "TC.q", "HBA1C.q", "HDL.q", "TG.q", "ALB.q", "CLCR.q", "BMI.q", "CRP.q", "LDL.q", "GLUCOSE.q", "FIB.q", "PULSE.q", "WC.q", "EDUCATION", "INCOME", "ALCOHOL", "TOBACCO", "PHYSICAL_ACTIVITY"),
+    CSI15.q = c("SBP.q", "DBP.q", "TC.q", "HBA1C.q", "HDL.q", "TG.q", "ALB.q", "CLCR.q", "BMI.q", "CRP.q", "EDUCATION", "INCOME", "ALCOHOL", "TOBACCO", "PHYSICAL_ACTIVITY"),
+    CSI5.q = c("EDUCATION", "INCOME", "ALCOHOL", "TOBACCO", "PHYSICAL_ACTIVITY"),CSIAUTO = c("SBP", "DBP", "HBA1C", "HDL", "TRIGLYCERIDES", "URINE_CREATININE", "BMI", "CRP", "LDL", "GLUCOSE", "FIBRINOGEN", "PULSE", "WAIST_CIRCUMFERENCE", "EDUCATION", "ALCOHOL", "TOBACCO", "PHYSICAL_ACTIVITY"),
+    CSIAUTO.q = c("SBP.q", "DBP.q", "HBA1C.q", "HDL.q", "TG.q", "CLCR.q", "BMI.q", "CRP.q", "LDL.q", "GLUCOSE.q", "FIB.q", "PULSE.q", "WC.q", "EDUCATION", "ALCOHOL", "TOBACCO", "PHYSICAL_ACTIVITY"))
+for (nm in names(composites)) {
+  curr_comp <- composites[[nm]]
+  print(nm)
+  print(omega.fun(CCA_Z[curr_comp]))
+}
+```
+
